@@ -158,7 +158,8 @@ Public and private keys generated and saved as 'public_key.pem' and 'private_key
 
 ### Embedding Text in Image
 ```bash
-python script.py
+python3 VeilVault.py
+
 Do you want to generate keys, embed text, extract text, embed image, or extract image? embed_text
 Enter the text you want to embed in the image: [Your Secret Text]
 Enter the path to the input image: [Input Image Path]
