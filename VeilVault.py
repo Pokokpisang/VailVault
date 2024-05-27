@@ -4,6 +4,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.padding import PKCS7
 from cryptography.hazmat.backends import default_backend
+from tqdm import tqdm
 from PIL import Image
 import numpy as np
 import os
@@ -143,18 +144,21 @@ def embed_image_in_image(cover_image_path, secret_image_path, output_path, publi
         pixel_indices = list(range(cover_pixels.size // 4))
         prng.shuffle(pixel_indices)
         
-        for i in range(64):
-            idx = pixel_indices[i]
-            bit = (file_size >> (63 - i)) & 0x1
-            if (cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] & 0x1) != bit:
-                cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] ^= 0x1
-        
-        for i, byte in enumerate(data_to_encode):
-            for bit in range(8):
-                idx = pixel_indices[64 + i * 8 + bit]
-                if (cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] & 0x1) != ((byte >> (7 - bit)) & 0x1):
+        with tqdm(total=64 + file_size * 8, desc="Embedding Image") as pbar:
+            for i in range(64):
+                idx = pixel_indices[i]
+                bit = (file_size >> (63 - i)) & 0x1
+                if (cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] & 0x1) != bit:
                     cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] ^= 0x1
-        
+                pbar.update(1)
+            
+            for i, byte in enumerate(data_to_encode):
+                for bit in range(8):
+                    idx = pixel_indices[64 + i * 8 + bit]
+                    if (cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] & 0x1) != ((byte >> (7 - bit)) & 0x1):
+                        cover_pixels[idx // cover_pixels.shape[1], idx % cover_pixels.shape[1], 0] ^= 0x1
+                    pbar.update(1)
+
         new_img = Image.fromarray(cover_pixels, 'RGBA')
         new_img.save(output_path, format='PNG', optimize=True)
         print(f"File '{secret_image_path}' has been successfully hidden in '{output_path}'.")
@@ -195,22 +199,25 @@ def extract_image_from_image(image_path, output_file_path, private_key_path):
         
         num_bytes_to_extract = file_size
         extracted_bytes = []
-        
+
         pixel_indices = list(range(pixels.size // 4))
         prng.shuffle(pixel_indices)
-        
+
         for i in range(64):
             idx = pixel_indices[i]
             file_size = (file_size << 1) | (pixels[idx // pixels.shape[1], idx % pixels.shape[1], 0] & 0x1)
         
         num_bytes_to_extract = file_size
         extracted_bytes = []
-        for i in range(num_bytes_to_extract):
-            byte = 0
-            for bit in range(8):
-                idx = pixel_indices[64 + i * 8 + bit]
-                byte = (byte << 1) | (pixels[idx // pixels.shape[1], idx % pixels.shape[1], 0] & 0x1)
-            extracted_bytes.append(byte)
+
+        with tqdm(total=num_bytes_to_extract * 8, desc="Extracting Image Data") as pbar:
+            for i in range(num_bytes_to_extract):
+                byte = 0
+                for bit in range(8):
+                    idx = pixel_indices[64 + i * 8 + bit]
+                    byte = (byte << 1) | (pixels[idx // pixels.shape[1], idx % pixels.shape[1], 0] & 0x1)
+                    pbar.update(1)
+                extracted_bytes.append(byte)
         
         data_to_decode = bytes(extracted_bytes)
 
@@ -244,24 +251,23 @@ def embed_text_in_image(image_path, text, output_path):
 
         # Convert text to binary
         binary_text = ''.join(format(ord(char), '08b') for char in text)
-        text_length = len(binary_text)
+        binary_text += '00000000' * 4  # Add delimiter to mark the end of text
 
+        text_length = len(binary_text)
         if text_length > pixels.size * 3:
             raise ValueError("The image is too small to hold the text.")
 
-        # Add delimiter to mark the end of text
-        binary_text += '00000000' * 4  # Four null characters to indicate the end
-
-        # Embed binary text into the image
         idx = 0
-        for i in range(pixels.shape[0]):
-            for j in range(pixels.shape[1]):
-                for k in range(3):
-                    if idx < len(binary_text):
-                        pixel_bin = format(pixels[i, j, k], '08b')
-                        pixel_bin = pixel_bin[:-1] + binary_text[idx]
-                        pixels[i, j, k] = int(pixel_bin, 2)
-                        idx += 1
+        with tqdm(total=text_length, desc="Embedding Text") as pbar:
+            for i in range(pixels.shape[0]):
+                for j in range(pixels.shape[1]):
+                    for k in range(3):
+                        if idx < text_length:
+                            pixel_bin = format(pixels[i, j, k], '08b')
+                            pixel_bin = pixel_bin[:-1] + binary_text[idx]
+                            pixels[i, j, k] = int(pixel_bin, 2)
+                            idx += 1
+                            pbar.update(1)
 
         modified_image = Image.fromarray(pixels)
         modified_image.save(output_path)
@@ -276,29 +282,28 @@ def extract_text_from_image(image_path):
         pixels = np.array(img)
 
         binary_text = ''
-        for i in range(pixels.shape[0]):
-            for j in range(pixels.shape[1]):
-                for k in range(3):
-                    binary_text += bin(pixels[i, j, k])[-1]
+        with tqdm(total=pixels.size * 3, desc="Extracting Text") as pbar:
+            for i in range(pixels.shape[0]):
+                for j in range(pixels.shape[1]):
+                    for k in range(3):
+                        binary_text += bin(pixels[i, j, k])[-1]
+                        pbar.update(1)
 
-        # Split the binary text into 8-bit chunks
         binary_chars = [binary_text[i:i + 8] for i in range(0, len(binary_text), 8)]
-
-        # Convert binary chunks to text
         extracted_text = ''
         for binary_char in binary_chars:
             char = chr(int(binary_char, 2))
             if char == '\x00':
-                break  # Stop at the delimiter
+                break
             extracted_text += char
 
-        # Save the extracted text to a file
         with open("decrypt_textFromImage.txt", "w") as text_file:
             text_file.write(extracted_text)
 
         return extracted_text
     except Exception as e:
         print(f"An error occurred during extracting text from image: {e}")
+
 
 def main():
     while True:
